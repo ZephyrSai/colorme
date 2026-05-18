@@ -1,5 +1,6 @@
 # ColorMe
 
+https://zephyrsai.github.io/colorme/
 A calm, browser-based coloring studio. Upload any image, it becomes an outline, then you can either color it region-by-region by hand, or watch it paint itself in zen mode. Realistic brush textures (pencil, crayon, watercolor, acrylic, oil, marker), synthesized brush-stroke sounds, and an ambient drone for background music — no external assets required.
 
 100% client-side. Pure HTML/CSS/JS. No build step.
