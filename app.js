@@ -136,40 +136,133 @@
       this.ensure();
       if (!this.ctx) return;
       if (this.ctx.state === "suspended") this.ctx.resume();
+      const fn = this["_sound_" + brush] || this._sound_marker;
+      fn.call(this, this.ctx.currentTime);
+    },
 
-      const t = this.ctx.currentTime;
-      // Per-brush tone: filter shape + peak gain + duration. Volumes are tuned
-      // so each stroke is clearly audible over the ambient music — they were
-      // way too quiet before.
-      const tones = {
-        pencil:     { type: "bandpass", freq: 2400, Q: 0.7, peak: 0.45, attack: 0.005, dur: 0.18 },
-        crayon:     { type: "bandpass", freq: 900,  Q: 0.7, peak: 0.55, attack: 0.015, dur: 0.24 },
-        watercolor: { type: "lowpass",  freq: 700,  Q: 0.5, peak: 0.32, attack: 0.05,  dur: 0.55 },
-        acrylic:    { type: "lowpass",  freq: 1400, Q: 0.5, peak: 0.55, attack: 0.015, dur: 0.32 },
-        oil:        { type: "bandpass", freq: 550,  Q: 0.6, peak: 0.50, attack: 0.03,  dur: 0.45 },
-        marker:     { type: "lowpass",  freq: 1800, Q: 0.5, peak: 0.50, attack: 0.008, dur: 0.22 },
-        eraser:     { type: "highpass", freq: 700,  Q: 0.5, peak: 0.30, attack: 0.02,  dur: 0.28 },
-      };
-      const tn = tones[brush] || tones.marker;
-
-      const src = this.ctx.createBufferSource();
+    // ---- per-brush stroke sounds ----
+    // Each brush gets its own audio graph for true distinction, not just a
+    // different filter on the same noise. Common building blocks:
+    //   - filtered noise from the brown-noise buffer
+    //   - optional oscillator tone (for "squeak" or "body")
+    //   - optional LFO on gain (for "graininess" or "rubbing")
+    //   - optional filter sweep (for "flow")
+    _filteredNoise(t, dur, type, freq, Q, peak, attack, rateMin, rateMax) {
+      const ctx = this.ctx;
+      const src = ctx.createBufferSource();
       src.buffer = this.noiseBuffer;
       src.loop = true;
-      src.playbackRate.value = 0.7 + Math.random() * 0.6;
+      src.playbackRate.value = rateMin + Math.random() * (rateMax - rateMin);
+      const f = ctx.createBiquadFilter();
+      f.type = type; f.frequency.value = freq; f.Q.value = Q;
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0, t);
+      g.gain.linearRampToValueAtTime(peak, t + attack);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+      src.connect(f); f.connect(g); g.connect(this.masterFx);
+      src.start(t); src.stop(t + dur + 0.05);
+      return { src, f, g };
+    },
+    _tone(t, dur, type, freqA, freqB, peak, attack) {
+      const ctx = this.ctx;
+      const o = ctx.createOscillator();
+      o.type = type;
+      o.frequency.setValueAtTime(freqA, t);
+      if (freqB !== freqA) o.frequency.linearRampToValueAtTime(freqB, t + dur);
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0, t);
+      g.gain.linearRampToValueAtTime(peak, t + attack);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+      o.connect(g); g.connect(this.masterFx);
+      o.start(t); o.stop(t + dur + 0.05);
+      return { o, g };
+    },
+    _modulate(t, dur, target, lfoType, lfoFreq, depth) {
+      const ctx = this.ctx;
+      const lfo = ctx.createOscillator();
+      const lg = ctx.createGain();
+      lfo.type = lfoType;
+      lfo.frequency.value = lfoFreq;
+      lg.gain.value = depth;
+      lfo.connect(lg); lg.connect(target.gain);
+      lfo.start(t); lfo.stop(t + dur);
+    },
 
-      const filter = this.ctx.createBiquadFilter();
-      filter.type = tn.type;
-      filter.frequency.value = tn.freq;
-      filter.Q.value = tn.Q;
+    _sound_pencil(t) {
+      // sharp high scratch — like graphite catching paper grain
+      const dur = 0.18;
+      this._filteredNoise(t, dur, "bandpass", 2400 + Math.random() * 600, 1.6,
+                          0.55, 0.003, 0.9, 1.4);
+    },
 
-      const gain = this.ctx.createGain();
-      gain.gain.setValueAtTime(0, t);
-      gain.gain.linearRampToValueAtTime(tn.peak, t + tn.attack);
-      gain.gain.exponentialRampToValueAtTime(0.0001, t + tn.dur);
+    _sound_crayon(t) {
+      // granular drag — broadband mid noise with fast amplitude modulation
+      // so it sounds bumpy, like wax catching paper texture
+      const dur = 0.26;
+      const node = this._filteredNoise(t, dur, "bandpass", 900, 0.7,
+                                       0.50, 0.018, 0.6, 1.0);
+      this._modulate(t, dur, node.g, "square", 40 + Math.random() * 30, 0.18);
+    },
 
-      src.connect(filter); filter.connect(gain); gain.connect(this.masterFx);
-      src.start(t);
-      src.stop(t + tn.dur + 0.05);
+    _sound_watercolor(t) {
+      // wet whoosh — slow attack, soft body, with the filter sweeping up
+      // and back down for a "flowing water" feeling
+      const dur = 0.62;
+      const ctx = this.ctx;
+      const src = ctx.createBufferSource();
+      src.buffer = this.noiseBuffer;
+      src.loop = true;
+      src.playbackRate.value = 0.45 + Math.random() * 0.25;
+      const f = ctx.createBiquadFilter();
+      f.type = "lowpass"; f.Q.value = 0.4;
+      f.frequency.setValueAtTime(400, t);
+      f.frequency.linearRampToValueAtTime(850, t + dur * 0.45);
+      f.frequency.linearRampToValueAtTime(500, t + dur);
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0, t);
+      g.gain.linearRampToValueAtTime(0.42, t + 0.09);   // slow attack
+      g.gain.linearRampToValueAtTime(0.36, t + dur * 0.5);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+      src.connect(f); f.connect(g); g.connect(this.masterFx);
+      src.start(t); src.stop(t + dur + 0.05);
+    },
+
+    _sound_acrylic(t) {
+      // thick smear — mid noise PLUS a low pitched sine for "body weight"
+      const dur = 0.34;
+      this._filteredNoise(t, dur, "bandpass", 1100 + Math.random() * 300, 0.9,
+                          0.50, 0.022, 0.6, 0.9);
+      // pitched body, very subtle — gives a "thick paint" weight
+      this._tone(t, dur, "sine", 200 + Math.random() * 80,
+                 180 + Math.random() * 60, 0.08, 0.04);
+    },
+
+    _sound_oil(t) {
+      // buttery glide — two noise bands stacked (low body + mid hiss)
+      // gives a rich layered sound that feels viscous
+      const dur = 0.48;
+      this._filteredNoise(t, dur, "bandpass", 220, 0.8,
+                          0.38, 0.05, 0.4, 0.6);   // low body
+      this._filteredNoise(t, dur, "bandpass", 600 + Math.random() * 200, 0.5,
+                          0.30, 0.06, 0.8, 1.1);   // mid hiss
+    },
+
+    _sound_marker(t) {
+      // smooth squeak — noise plus a falling sine tone (the felt-tip squeak)
+      const dur = 0.24;
+      this._filteredNoise(t, dur, "lowpass", 1800, 0.4,
+                          0.40, 0.008, 0.8, 1.2);
+      const startF = 700 + Math.random() * 250;
+      this._tone(t, dur, "sine", startF, startF * 0.55, 0.12, 0.015);
+    },
+
+    _sound_eraser(t) {
+      // rubbery rub — broadband noise with a strong LFO so it pulses
+      // rhythmically, like back-and-forth rubbing
+      const dur = 0.34;
+      const node = this._filteredNoise(t, dur, "bandpass", 1200, 0.7,
+                                       0.42, 0.02, 0.55, 0.95);
+      this._modulate(t, dur, node.g, "sine", 13 + Math.random() * 8, 0.28);
     },
     toggleMusic(on) {
       this.ensure();
@@ -1885,6 +1978,69 @@
           : interStrokePause * (0.4 + Math.random() * 0.9);
         await delay(pause);
       }
+    }
+
+    // GUARANTEE COVERAGE — after the gestural pass, sample the actual paint
+    // canvas. Any pixel inside the region that's still paper-white gets a
+    // dab with the SAME color, so the region is genuinely filled instead of
+    // visibly patchy. This is what makes coverage reliable for arbitrary
+    // images and arbitrary brushes (oil's swirls especially leave gaps).
+    if (!state.zenAbort) {
+      await fillRegionGaps(reg, color, brush, effRadius);
+    }
+  }
+
+  // Sample the paint canvas in `reg`'s bbox and find pixels that are still
+  // (near) paper-white. Dab them with `color` using the current brush. Two
+  // passes: a coarse scan first (catches the big holes quickly with broad
+  // dabs), then a fine scan with smaller dabs for any remaining specks.
+  async function fillRegionGaps(reg, color, brush, effRadius) {
+    const w = state.canvasW, h = state.canvasH;
+    const bbox = reg.bbox;
+    const bw = bbox.x1 - bbox.x0 + 1;
+    const bh = bbox.y1 - bbox.y0 + 1;
+    if (bw <= 0 || bh <= 0) return;
+
+    // do up to 2 fill passes, each with progressively smaller dabs, until
+    // the canvas is clean. Caps prevent runaway on degenerate regions.
+    for (let pass = 0; pass < 2; pass++) {
+      if (state.zenAbort) return;
+      const dabRadius = effRadius * (pass === 0 ? 1.0 : 0.6);
+      const stride = Math.max(2, Math.floor(dabRadius * 0.55));
+
+      const id = paintCtx.getImageData(bbox.x0, bbox.y0, bw, bh);
+      const px = id.data;
+      const gaps = [];
+      for (let y = 0; y < bh; y += stride) {
+        const gy = y + bbox.y0;
+        for (let x = 0; x < bw; x += stride) {
+          const gx = x + bbox.x0;
+          if (gx >= w || gy >= h) continue;
+          if (!reg.region[gy * w + gx]) continue;
+          const pi = (y * bw + x) * 4;
+          // "paper-white": R ≥ 245, G ≥ 240, B ≥ 230 (matches #fefcf8 with
+          // tolerance for tiny dab residue) — anything painted dropped one
+          // of these channels far enough to fail the check.
+          if (px[pi] >= 245 && px[pi + 1] >= 240 && px[pi + 2] >= 230) {
+            gaps.push(gx, gy);
+          }
+        }
+      }
+      if (gaps.length === 0) return;
+
+      // One stroke sound to acknowledge the fill, then dab them all. Yield
+      // to the event loop in chunks so the browser stays responsive on big
+      // regions (sky / background gaps can run into thousands of dabs).
+      audio.stroke(brush);
+      const total = gaps.length / 2;
+      for (let i = 0; i < gaps.length; i += 2) {
+        if (state.zenAbort) return;
+        brushDab(gaps[i], gaps[i + 1], color, brush, reg.region, dabRadius);
+        if (((i / 2) & 63) === 63) await delay(0);
+      }
+      // tiny pause so the user sees the just-filled region settle before
+      // we run the second pass or move to the next region
+      await delay(80 + Math.min(180, total * 0.6));
     }
   }
 
