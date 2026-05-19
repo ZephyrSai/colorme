@@ -111,7 +111,7 @@
       if (!Ctx) return;
       this.ctx = new Ctx();
       this.masterFx = this.ctx.createGain();
-      this.masterFx.gain.value = 0.55;
+      this.masterFx.gain.value = 0.95;   // loud enough to be heard over music
       this.masterFx.connect(this.ctx.destination);
       this.masterMusic = this.ctx.createGain();
       this.masterMusic.gain.value = 0;
@@ -138,9 +138,19 @@
       if (this.ctx.state === "suspended") this.ctx.resume();
 
       const t = this.ctx.currentTime;
-      const dur = ({
-        pencil: 0.18, crayon: 0.22, watercolor: 0.55, acrylic: 0.32, oil: 0.45, marker: 0.25
-      })[brush] || 0.25;
+      // Per-brush tone: filter shape + peak gain + duration. Volumes are tuned
+      // so each stroke is clearly audible over the ambient music — they were
+      // way too quiet before.
+      const tones = {
+        pencil:     { type: "bandpass", freq: 2400, Q: 0.7, peak: 0.45, attack: 0.005, dur: 0.18 },
+        crayon:     { type: "bandpass", freq: 900,  Q: 0.7, peak: 0.55, attack: 0.015, dur: 0.24 },
+        watercolor: { type: "lowpass",  freq: 700,  Q: 0.5, peak: 0.32, attack: 0.05,  dur: 0.55 },
+        acrylic:    { type: "lowpass",  freq: 1400, Q: 0.5, peak: 0.55, attack: 0.015, dur: 0.32 },
+        oil:        { type: "bandpass", freq: 550,  Q: 0.6, peak: 0.50, attack: 0.03,  dur: 0.45 },
+        marker:     { type: "lowpass",  freq: 1800, Q: 0.5, peak: 0.50, attack: 0.008, dur: 0.22 },
+        eraser:     { type: "highpass", freq: 700,  Q: 0.5, peak: 0.30, attack: 0.02,  dur: 0.28 },
+      };
+      const tn = tones[brush] || tones.marker;
 
       const src = this.ctx.createBufferSource();
       src.buffer = this.noiseBuffer;
@@ -148,32 +158,18 @@
       src.playbackRate.value = 0.7 + Math.random() * 0.6;
 
       const filter = this.ctx.createBiquadFilter();
-      const gain = this.ctx.createGain();
+      filter.type = tn.type;
+      filter.frequency.value = tn.freq;
+      filter.Q.value = tn.Q;
 
-      if (brush === "pencil") {
-        filter.type = "highpass"; filter.frequency.value = 1800;
-        gain.gain.value = 0; gain.gain.linearRampToValueAtTime(0.10, t + 0.01);
-      } else if (brush === "crayon") {
-        filter.type = "bandpass"; filter.frequency.value = 900; filter.Q.value = 0.8;
-        gain.gain.value = 0; gain.gain.linearRampToValueAtTime(0.16, t + 0.02);
-      } else if (brush === "watercolor") {
-        filter.type = "lowpass"; filter.frequency.value = 600;
-        gain.gain.value = 0; gain.gain.linearRampToValueAtTime(0.09, t + 0.06);
-      } else if (brush === "acrylic") {
-        filter.type = "lowpass"; filter.frequency.value = 1200;
-        gain.gain.value = 0; gain.gain.linearRampToValueAtTime(0.16, t + 0.02);
-      } else if (brush === "oil") {
-        filter.type = "bandpass"; filter.frequency.value = 500; filter.Q.value = 0.5;
-        gain.gain.value = 0; gain.gain.linearRampToValueAtTime(0.15, t + 0.04);
-      } else {
-        filter.type = "lowpass"; filter.frequency.value = 1800;
-        gain.gain.value = 0; gain.gain.linearRampToValueAtTime(0.15, t + 0.01);
-      }
-      gain.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+      const gain = this.ctx.createGain();
+      gain.gain.setValueAtTime(0, t);
+      gain.gain.linearRampToValueAtTime(tn.peak, t + tn.attack);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + tn.dur);
 
       src.connect(filter); filter.connect(gain); gain.connect(this.masterFx);
       src.start(t);
-      src.stop(t + dur + 0.05);
+      src.stop(t + tn.dur + 0.05);
     },
     toggleMusic(on) {
       this.ensure();
@@ -1753,7 +1749,10 @@
       const start = performance.now();
 
       audio.stroke(brush);
-      let extraSoundAt = duration * 0.55;
+      // any stroke longer than ~0.4s gets one or two retriggers along the way
+      // so the sound carries through the visible motion
+      let extraSoundAt = duration > 400 ? duration * 0.45 : -1;
+      let secondSoundAt = duration > 900 ? duration * 0.78 : -1;
 
       brushDab(stroke[0].x, stroke[0].y, color, brush, regionMask, r);
       let lastDabX = stroke[0].x, lastDabY = stroke[0].y;
@@ -1814,9 +1813,14 @@
           lastDabX = x; lastDabY = y;
         }
 
-        if (extraSoundAt > 0 && (now - start) > extraSoundAt && duration > 600) {
+        const elapsed = now - start;
+        if (extraSoundAt > 0 && elapsed > extraSoundAt) {
           audio.stroke(brush);
           extraSoundAt = -1;
+        }
+        if (secondSoundAt > 0 && elapsed > secondSoundAt) {
+          audio.stroke(brush);
+          secondSoundAt = -1;
         }
 
         if (t < 1) rafHandle = requestAnimationFrame(frame);
@@ -2003,7 +2007,11 @@
 
       // periodic stroke sound on long drags
       manual.soundAccum += dist;
-      if (manual.soundAccum > 80) {
+      // retrigger sound roughly every ~40px of movement so a long swipe
+      // actually sounds like a continuous stroke (jitter the threshold a bit
+      // so it doesn't beep on a metronome)
+      const trigger = 36 + Math.random() * 22;
+      if (manual.soundAccum > trigger) {
         audio.stroke(state.brush);
         manual.soundAccum = 0;
       }
