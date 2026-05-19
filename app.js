@@ -509,7 +509,113 @@
     }
   });
 
+  // Pick a sample appropriate for the current viewport. Phones get a much
+  // simpler scene — fewer, larger shapes — so the outline stays legible
+  // after being scaled down to a small canvas.
   function loadSample() {
+    const narrow = window.innerWidth < 700 || window.innerHeight < 560;
+    if (narrow) return loadSampleSimple();
+    return loadSampleDetailed();
+  }
+
+  // SIMPLE sample (mobile / small screens). Big shapes, clean colors.
+  function loadSampleSimple() {
+    const sw = 700, sh = 500;
+    const oc = document.createElement("canvas");
+    oc.width = sw; oc.height = sh;
+    const c = oc.getContext("2d");
+    const stroke = "#2a221c";
+    c.lineJoin = "round"; c.lineCap = "round";
+    c.strokeStyle = stroke; c.lineWidth = 3;
+
+    // sky
+    const sky = c.createLinearGradient(0, 0, 0, sh * 0.65);
+    sky.addColorStop(0, "#a8d2ea"); sky.addColorStop(1, "#fce5b8");
+    c.fillStyle = sky; c.fillRect(0, 0, sw, sh * 0.65);
+
+    // sun
+    c.fillStyle = "#fad876";
+    c.beginPath(); c.arc(sw * 0.78, sh * 0.22, sh * 0.12, 0, Math.PI * 2);
+    c.fill(); c.stroke();
+
+    // back mountain
+    c.fillStyle = "#9aa6c2";
+    c.beginPath();
+    c.moveTo(sw * 0.40, sh * 0.65);
+    c.lineTo(sw * 0.70, sh * 0.34);
+    c.lineTo(sw, sh * 0.55);
+    c.lineTo(sw, sh * 0.65);
+    c.closePath();
+    c.fill(); c.stroke();
+
+    // front mountain
+    c.fillStyle = "#7a8aaa";
+    c.beginPath();
+    c.moveTo(0, sh * 0.65);
+    c.lineTo(sw * 0.30, sh * 0.32);
+    c.lineTo(sw * 0.58, sh * 0.65);
+    c.closePath();
+    c.fill(); c.stroke();
+
+    // ground
+    c.fillStyle = "#9ec48e";
+    c.beginPath();
+    c.moveTo(0, sh * 0.65);
+    c.lineTo(sw, sh * 0.65);
+    c.lineTo(sw, sh);
+    c.lineTo(0, sh);
+    c.closePath();
+    c.fill(); c.stroke();
+
+    // house
+    const hx = sw * 0.20, hy = sh * 0.70, hw = sw * 0.22, hh = sh * 0.22;
+    c.fillStyle = "#f1d2a6"; c.fillRect(hx, hy, hw, hh); c.strokeRect(hx, hy, hw, hh);
+    // roof
+    c.fillStyle = "#c66a4a";
+    c.beginPath();
+    c.moveTo(hx - 12, hy);
+    c.lineTo(hx + hw / 2, hy - hh * 0.45);
+    c.lineTo(hx + hw + 12, hy);
+    c.closePath();
+    c.fill(); c.stroke();
+    // door
+    const dw = hw * 0.30, dh = hh * 0.55;
+    c.fillStyle = "#7a4a2b";
+    c.fillRect(hx + hw / 2 - dw / 2, hy + hh - dh, dw, dh);
+    c.strokeRect(hx + hw / 2 - dw / 2, hy + hh - dh, dw, dh);
+    // window
+    c.fillStyle = "#bcd9ee";
+    c.fillRect(hx + hw * 0.10, hy + hh * 0.15, hw * 0.25, hw * 0.25);
+    c.strokeRect(hx + hw * 0.10, hy + hh * 0.15, hw * 0.25, hw * 0.25);
+
+    // tree
+    const tx = sw * 0.62, tBase = sh * 0.92;
+    c.fillStyle = "#7a4a2b";
+    c.fillRect(tx - sw * 0.018, tBase - sh * 0.16, sw * 0.036, sh * 0.16);
+    c.strokeRect(tx - sw * 0.018, tBase - sh * 0.16, sw * 0.036, sh * 0.16);
+    c.fillStyle = "#6ea863";
+    c.beginPath(); c.arc(tx, tBase - sh * 0.22, sh * 0.13, 0, Math.PI * 2);
+    c.fill(); c.stroke();
+
+    // two simple clouds
+    function cloud(cx, cy, r) {
+      c.fillStyle = "#ffffff";
+      c.beginPath();
+      c.arc(cx,        cy,         r,        0, Math.PI * 2);
+      c.arc(cx + r,    cy - r * 0.4, r * 0.85, 0, Math.PI * 2);
+      c.arc(cx + r*2,  cy,         r,        0, Math.PI * 2);
+      c.fill(); c.stroke();
+    }
+    cloud(sw * 0.12, sh * 0.13, sh * 0.05);
+    cloud(sw * 0.46, sh * 0.10, sh * 0.045);
+
+    const img = new Image();
+    img.onload = () => setupCanvasFromImage(img);
+    img.src = oc.toDataURL();
+  }
+
+  // DETAILED sample (desktop / wide tablets) — the original layered scene.
+  function loadSampleDetailed() {
     const sw = 1000, sh = 700;
     const oc = document.createElement("canvas");
     oc.width = sw; oc.height = sh;
@@ -800,6 +906,16 @@
     });
     els.canvasWrap.style.width = w + "px";
     els.canvasWrap.style.height = h + "px";
+
+    // Auto-thin the outline on small canvases — a 2-pixel dilated line is
+    // ~6 device pixels on a phone, way too chunky. Only adjust if the user
+    // hasn't already moved the slider away from the default.
+    const small = Math.min(w, h) < 500;
+    if (small && state.weight > 1) {
+      state.weight = 1;
+      els.weightSlider.value = "1";
+      els.weightVal.textContent = "1";
+    }
 
     // paint layer starts as paper-white
     paintCtx.fillStyle = "#fefcf8";
@@ -1510,20 +1626,27 @@
     }
 
     function coveragePct() {
+      // count cells that have been visited by AT LEAST 2 strokes (cov >= 1.0)
+      // so we paint enough to actually look saturated, not translucent
       let c = 0;
-      for (let i = 0; i < cov.length; i++) if (cov[i] !== 2 && cov[i] >= 0.5) c++;
+      for (let i = 0; i < cov.length; i++) if (cov[i] !== 2 && cov[i] >= 1.0) c++;
       return c / inRegion;
     }
 
     function pickStart() {
-      // gather the uncovered cells; pick one at random (NOT a deterministic scan
-      // order — that's what would re-create raster patterns).
-      const candidates = [];
+      // gather under-covered cells (still need more paint); pick one at random
+      // so we don't re-create a raster pattern. Lower-coverage cells are
+      // preferred so coverage evens out organically.
+      const sparse = [];
+      const partial = [];
       for (let i = 0; i < cov.length; i++) {
-        if (cov[i] < 0.4) candidates.push(i);
+        if (cov[i] === 2) continue;        // out of region
+        if (cov[i] < 0.5) sparse.push(i);
+        else if (cov[i] < 1.0) partial.push(i);
       }
-      if (!candidates.length) return null;
-      const i = candidates[Math.floor(Math.random() * candidates.length)];
+      const pool = sparse.length ? sparse : partial;
+      if (!pool.length) return null;
+      const i = pool[Math.floor(Math.random() * pool.length)];
       const gx = i % gw, gy = Math.floor(i / gw);
       return {
         x: bbox.x0 + gx * cellSize + cellSize / 2 + (Math.random() - 0.5) * cellSize,
@@ -1532,8 +1655,11 @@
     }
 
     const strokes = [];
-    const maxStrokes = Math.min(45, Math.max(4, Math.ceil(reg.area / 700)));
-    const targetCoverage = 0.92;
+    // more strokes for big regions, generous cap so sky / mountains fill in
+    const maxStrokes = Math.min(60, Math.max(5, Math.ceil(reg.area / 500)));
+    // require ~2 passes per cell so colors actually look saturated rather
+    // than translucent — single-pass coverage left zen looking unfinished
+    const targetCoverage = 1.05;
     const stepDist = Math.max(2, effRadius * 0.32);
     const longSide = Math.hypot(bbox.x1 - bbox.x0, bbox.y1 - bbox.y0);
 
@@ -1930,8 +2056,10 @@
     const regions = [];
     let yieldCounter = 0;
 
-    // skip any region larger than this — usually means edge detection leaked
-    const maxRegionArea = Math.floor(totalPixels * 0.45);
+    // Only skip regions that clearly indicate a leaked outline (almost the
+    // entire canvas). A real "sky" region in a clean sample is huge but
+    // legitimate, and skipping it leaves zen looking abruptly half-done.
+    const maxRegionArea = Math.floor(totalPixels * 0.85);
     const minRegionArea = 80;
 
     const step = 6;
